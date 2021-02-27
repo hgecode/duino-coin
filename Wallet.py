@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 ##########################################
-# Duino-Coin GUI Wallet (v2.0)
+# Duino-Coin Tkinter GUI Wallet (v2.2)
 # https://github.com/revoxhere/duino-coin
 # Distributed under MIT license
-# © Duino-Coin Community 2021
+# © Duino-Coin Community 2019-2021
 ##########################################
 from tkinter import (
     Tk,
@@ -39,17 +39,32 @@ from json import loads
 from configparser import ConfigParser
 import json
 import subprocess, os
+import locale
 
 
-version = 2.0
+version = 2.2
 config = ConfigParser()
 resources = "Wallet_" + str(version) + "_resources/"
-backgroundColor = "#121012"
-fontColor = "#eee"
-foregroundColor = "#F79F1F"
-foregroundColorSecondary = "#F8EFBA"
-min_trans_difference = 0.000000001  # Minimum transaction amount to be saved
+backgroundColor = "#121212"
+fontColor = "#FAFAFA"
+foregroundColor = "#f0932b"
+foregroundColorSecondary = "#ffbe76"
+min_trans_difference = 0.00000000001  # Minimum transaction amount to be saved
+min_trans_difference_notify = 0.5  # Minimum transaction amount to show a notification
+wrong_passphrase = False
+iterations = 100_000
+globalBalance = 0
+locale = locale.getdefaultlocale()[0]
 
+with open(f"{resources}langs.json") as lang_file:
+    lang_file = json.load(lang_file)
+
+if locale == 'en_GB':
+    lang_file = lang_file["english"]
+elif locale == 'es_ES':
+    lang_file = lang_file["spanish"]
+else:
+    lang_file = lang_file["english"]
 
 def install(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
@@ -75,30 +90,74 @@ except:
 try:
     import pystray
 except:
+    print("Pystray is not installed. Continuing without using tray support")
+    disableTray = True
+else:
+    disableTray = False
+
+try:
+    from notifypy import Notify
+except:
+    print("Notifypy is not installed. Continuing without notification system")
+    notificationsEnabled = False
+else:
+    notificationsEnabled = True
+
+try:
+    from cryptography.fernet import Fernet, InvalidToken
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
+    backend = default_backend()
+except ModuleNotFoundError:
+    now = datetime.datetime.now()
     print(
-        'Pystray is not installed. Wallet will try to install it. If it fails, please manually install "pystray" python3 package.'
+        now.strftime("%H:%M:%S ")
+        + "Cryptography is not installed. Please install it using: python3 -m pip install cryptography.\nExiting in 15s."
     )
-    install("pystray")
+    sleep(15)
+    os._exit(1)
 
 
 try:
-    mkdir(resources)
-except FileExistsError:
-    pass
-
-with sqlite3.connect(f"{resources}/wallet.db") as con:
-    cur = con.cursor()
-    cur.execute(
-        """CREATE TABLE IF NOT EXISTS Transactions(Transaction_Date TEXT, amount REAL)"""
+    import secrets
+except ModuleNotFoundError:
+    now = datetime.datetime.now()
+    print(
+        now.strftime("%H:%M:%S ")
+        + "Secrets is not installed. Please install it using: python3 -m pip install secrets.\nExiting in 15s."
     )
-    cur.execute("""CREATE TABLE IF NOT EXISTS UserData(username TEXT, password TEXT)""")
+    sleep(15)
+    os._exit(1)
 
-with urlopen(
-    "https://raw.githubusercontent.com/revoxhere/duino-coin/gh-pages/serverip.txt"
-) as content:
-    content = content.read().decode().splitlines()
-    pool_address = content[0]
-    pool_port = content[1]
+try:
+    from base64 import urlsafe_b64encode as b64e, urlsafe_b64decode as b64d
+except:
+    now = datetime.datetime.now()
+    print(
+        now.strftime("%H:%M:%S ")
+        + "Base64 is not installed. Please install it using: python3 -m pip install base64.\nExiting in 15s."
+    )
+    sleep(15)
+    os._exit(1)
+
+try:
+    import tronpy
+    from tronpy.keys import PrivateKey
+
+    tronpy_installed = True
+except ModuleNotFoundError:
+    tronpy_installed = False
+    now = datetime.datetime.now()
+    print(
+        now.strftime("%H:%M:%S ")
+        + "Tronpy is not installed. Please install it using: python3 -m pip install tronpy.\nWrapper was disabled because of tronpy is needed for !"
+    )
+else:
+    tron = tronpy.Tron()
+    tron = tronpy.Tron()
+    wduco = tron.get_contract("TWYaXdxA12JywrUdou3PFD1fvx2PWjqK9U")
 
 
 def GetDucoPrice():
@@ -108,15 +167,57 @@ def GetDucoPrice():
         data=None,
     )
     if jsonapi.status_code == 200:
-        content = jsonapi.content.decode()
-        contentjson = loads(content)
-        ducofiat = round(float(contentjson["Duco price"]), 4)
+        try:
+            content = jsonapi.content.decode()
+            contentjson = loads(content)
+            ducofiat = round(float(contentjson["Duco price"]), 4)
+        except:
+            ducofiat = 0.003
     else:
         ducofiat = 0.003
-    Timer(15, GetDucoPrice).start()
+    Timer(30, GetDucoPrice).start()
 
 
-GetDucoPrice()
+def title(title):
+    if os.name == "nt":
+        os.system("title " + title)
+    else:
+        print("\33]0;" + title + "\a", end="")
+        sys.stdout.flush()
+
+
+def _derive_key(password: bytes, salt: bytes, iterations: int = iterations) -> bytes:
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=iterations,
+        backend=backend,
+    )
+    return b64e(kdf.derive(password))
+
+
+def password_encrypt(
+    message: bytes, password: str, iterations: int = iterations
+) -> bytes:
+    salt = secrets.token_bytes(16)
+    key = _derive_key(password.encode(), salt, iterations)
+    return b64e(
+        b"%b%b%b"
+        % (
+            salt,
+            iterations.to_bytes(4, "big"),
+            b64d(Fernet(key).encrypt(message)),
+        )
+    )
+
+
+def password_decrypt(token: bytes, password: str) -> bytes:
+    decoded = b64d(token)
+    salt, iterations, token = decoded[:16], decoded[16:20], b64e(decoded[20:])
+    iterations = int.from_bytes(iterations, "big")
+    key = _derive_key(password.encode(), salt, iterations)
+    return Fernet(key).decrypt(token)
 
 
 class LoginFrame(Frame):
@@ -124,7 +225,6 @@ class LoginFrame(Frame):
         super().__init__(master)
         master.title("Login")
         master.resizable(False, False)
-
 
         textFont2 = Font(size=12, weight="bold")
         textFont = Font(size=12, weight="normal")
@@ -138,14 +238,14 @@ class LoginFrame(Frame):
             self,
             background=foregroundColor,
             foreground=fontColor,
-            text="Welcome to the\nDuino-Coin\nTkinter GUI Wallet",
+            text=lang_file["welcome_message"],
             font=textFont2,
         )
         self.spacer = Label(self)
 
         self.label_username = Label(
             self,
-            text="USERNAME",
+            text=lang_file["username"],
             font=textFont2,
             background=backgroundColor,
             foreground=fontColor,
@@ -153,7 +253,7 @@ class LoginFrame(Frame):
         )
         self.label_password = Label(
             self,
-            text="PASSWORD",
+            text=lang_file["passwd"],
             font=textFont2,
             background=backgroundColor,
             foreground=fontColor,
@@ -183,7 +283,7 @@ class LoginFrame(Frame):
         self.var = IntVar()
         self.checkbox = Checkbutton(
             self,
-            text="Keep me logged in",
+            text=lang_file["keep_me_logged_in"],
             background=backgroundColor,
             activebackground=backgroundColor,
             selectcolor=backgroundColor,
@@ -198,7 +298,7 @@ class LoginFrame(Frame):
 
         self.logbtn = Button(
             self,
-            text="LOGIN",
+            text=lang_file["login"],
             foreground=foregroundColor,
             background=backgroundColor,
             activebackground=backgroundColor,
@@ -209,7 +309,7 @@ class LoginFrame(Frame):
 
         self.regbtn = Button(
             self,
-            text="REGISTER",
+            text=lang_file["register"],
             foreground=foregroundColor,
             background=backgroundColor,
             activebackground=backgroundColor,
@@ -241,16 +341,16 @@ class LoginFrame(Frame):
                     with sqlite3.connect(f"{resources}/wallet.db") as con:
                         cur = con.cursor()
                         cur.execute(
-                            """INSERT INTO UserData(username, password) VALUES(?, ?)""",
-                            (username, passwordEnc),
+                            """INSERT INTO UserData(username, password, useWrapper) VALUES(?, ?, ?)""",
+                            (username, passwordEnc, "False"),
                         )
                         con.commit()
                 root.destroy()
             else:
-                messagebox.showerror(title="Error loging-in", message=response[1])
+                messagebox.showerror(title=lang_file["login_error"], message=response[1])
         else:
             messagebox.showerror(
-                title="Error loging-in", message="Fill in the blanks first"
+                title=lang_file["login_error"], message=lang_file["fill_the_blanks_warning"]
             )
 
     def _registerprotocol(self):
@@ -275,29 +375,29 @@ class LoginFrame(Frame):
 
                 if response[0] == "OK":
                     messagebox.showinfo(
-                        title="Registration successfull",
-                        message="New user has been registered sucessfully. You can now login",
+                        title=lang_file["registration_success"],
+                        message=lang_file["registration_success_msg"],
                     )
                     register.destroy()
                     execl(sys.executable, sys.executable, *sys.argv)
                 else:
                     messagebox.showerror(
-                        title="Error registering user", message=response[1]
+                        title=lang_file["register_error"], message=response[1]
                     )
             else:
                 messagebox.showerror(
-                    title="Error registering user", message="Passwords don't match"
+                    title=lang_file["register_error"], message=lang_file["error_passwd_dont_match"]
                 )
         else:
             messagebox.showerror(
-                title="Error registering user", message="Fill in the blanks first"
+                title=lang_file["register_error"], message=lang_file["fill_the_blanks_warning"]
             )
 
     def _register_btn_clicked(self):
         global username, password, confpassword, email, register
         root.destroy()
         register = Tk()
-        register.title("Register")
+        register.title(lang_file["register"])
         register.resizable(False, False)
 
         textFont2 = Font(register, size=12, weight="bold")
@@ -312,7 +412,7 @@ class LoginFrame(Frame):
             register,
             background=foregroundColor,
             foreground=fontColor,
-            text="Register on network",
+            text=lang_file["register_on_network"],
             font=textFont2,
         )
         ducoLabel.grid(row=0, padx=5, pady=(5, 0), sticky="nswe")
@@ -320,7 +420,7 @@ class LoginFrame(Frame):
 
         Label(
             register,
-            text="USERNAME",
+            text=lang_file["username"],
             background=backgroundColor,
             foreground=fontColor,
             font=textFont2,
@@ -335,7 +435,7 @@ class LoginFrame(Frame):
 
         Label(
             register,
-            text="PASSWORD",
+            text=lang_file["passwd"],
             background=backgroundColor,
             foreground=fontColor,
             font=textFont2,
@@ -351,7 +451,7 @@ class LoginFrame(Frame):
 
         Label(
             register,
-            text="CONFIRM PASSWORD",
+            text=lang_file["confirm_passwd"],
             background=backgroundColor,
             foreground=fontColor,
             font=textFont2,
@@ -382,7 +482,7 @@ class LoginFrame(Frame):
 
         self.logbtn = Button(
             register,
-            text="REGISTER",
+            text=lang_file["register"],
             activebackground=backgroundColor,
             foreground=foregroundColor,
             background=backgroundColor,
@@ -392,6 +492,61 @@ class LoginFrame(Frame):
         self.logbtn.grid(columnspan=2, sticky="nswe", padx=(5, 5), pady=(5, 5))
         register.configure(background=backgroundColor)
 
+
+def LoadingWindow():
+    global loading, status
+    loading = Tk()
+    loading.resizable(False, False)
+    loading.configure(background=backgroundColor)
+    loading.title(lang_file["loading"])
+    try:
+        loading.iconphoto(True, PhotoImage(file=resources + "duco.png"))
+    except:
+        pass
+    textFont = Font(loading, size=10, weight="bold")
+    textFont2 = Font(loading, size=14, weight="bold")
+
+    Label(
+        loading,
+        text=lang_file["duino_coin_wallet"],
+        font=textFont2,
+        foreground=foregroundColor,
+        background=backgroundColor,
+    ).grid(row=0, column=0, sticky=S + W, pady=5, padx=5)
+    loading.update()
+
+    status = Label(
+        loading,
+        background=backgroundColor,
+        foreground=fontColor,
+        text=lang_file["loading_database"],
+        font=textFont,
+    )
+    status.grid(row=1, column=0, sticky=S + W, pady=(0, 5), padx=5)
+    loading.update()
+
+
+with urlopen(
+    "https://raw.githubusercontent.com/revoxhere/duino-coin/gh-pages/serverip.txt"
+) as content:
+    content = content.read().decode().splitlines()
+    pool_address = content[0]
+    pool_port = content[1]
+
+try:
+    mkdir(resources)
+except FileExistsError:
+    pass
+
+with sqlite3.connect(f"{resources}/wallet.db") as con:
+    cur = con.cursor()
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS Transactions(Transaction_Date TEXT, amount REAL)"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS UserData(username TEXT, password TEXT, useWrapper TEXT)"""
+    )
+    con.commit()
 
 if not Path(resources + "duco.png").is_file():
     urlretrieve("https://i.imgur.com/9JzxR0B.png", resources + "duco.png")
@@ -419,6 +574,7 @@ if userdata_count != 1:
     lf = LoginFrame(root)
     root.mainloop()
 else:
+    LoadingWindow()
     with sqlite3.connect(f"{resources}/wallet.db") as con:
         cur = con.cursor()
         cur.execute("SELECT * FROM UserData")
@@ -426,6 +582,8 @@ else:
         username = userdata_query[0]
         passwordEnc = (userdata_query[1]).decode("utf-8")
         password = b64decode(passwordEnc).decode("utf8")
+    status.config(text=lang_file["preparing_wallet_window"])
+    loading.update()
 
 
 def openGitHub(handler):
@@ -447,7 +605,7 @@ def openDiscord(handler):
 def openTransactions(handler):
     transactionsWindow = Toplevel()
     transactionsWindow.resizable(False, False)
-    transactionsWindow.title("Duino-Coin Wallet - Transactions")
+    transactionsWindow.title(lang_file["wallet_transactions"])
     transactionsWindow.transient([root])
     transactionsWindow.configure(background=backgroundColor)
 
@@ -456,14 +614,14 @@ def openTransactions(handler):
 
     Label(
         transactionsWindow,
-        text="LOCAL TRANSACTION LIST",
+        text=lang_file["local_transactions_list"],
         font=textFont3,
         background=backgroundColor,
         foreground=foregroundColor,
     ).grid(row=0, column=0, columnspan=2, sticky=S + W, pady=(5, 0), padx=5)
     Label(
         transactionsWindow,
-        text="Still a work in progress version",
+        text=lang_file["local_transactions_list_warning"],
         font=textFont,
         foreground=fontColor,
         background=backgroundColor,
@@ -554,7 +712,7 @@ def currencyConvert():
                         + str(tocurrency)
                     )
     except:
-        result = "Incorrect calculation"
+        result = lang_file["calculate_error"]
     result = "RESULT: " + result
     conversionresulttext.set(str(result))
     calculatorWindow.update()
@@ -570,7 +728,7 @@ def openCalculator(handler):
 
     calculatorWindow = Toplevel()
     calculatorWindow.resizable(False, False)
-    calculatorWindow.title("Duino-Coin Wallet - Calculator")
+    calculatorWindow.title(lang_file["wallet_calculator"])
     calculatorWindow.transient([root])
     calculatorWindow.configure(background=backgroundColor)
 
@@ -580,7 +738,7 @@ def openCalculator(handler):
 
     Label(
         calculatorWindow,
-        text="CURRENCY CONVERTER",
+        text=lang_file["currency_converter"],
         font=textFont3,
         foreground=foregroundColor,
         background=backgroundColor,
@@ -588,7 +746,7 @@ def openCalculator(handler):
 
     Label(
         calculatorWindow,
-        text="FROM",
+        text=lang_file["from"],
         font=textFont2,
         foreground=foregroundColor,
         background=backgroundColor,
@@ -623,7 +781,7 @@ def openCalculator(handler):
 
     Label(
         calculatorWindow,
-        text="TO",
+        text=lang_file["to"],
         font=textFont2,
         foreground=foregroundColor,
         background=backgroundColor,
@@ -658,7 +816,7 @@ def openCalculator(handler):
 
     Label(
         calculatorWindow,
-        text="INPUT AMOUNT",
+        text=lang_file["input_amount"],
         font=textFont2,
         foreground=foregroundColor,
         background=backgroundColor,
@@ -677,12 +835,12 @@ def openCalculator(handler):
     amountInput.grid(
         row=4, column=0, sticky=N + S + W + E, padx=5, columnspan=2, pady=(0, 5)
     )
-    amountInput.insert("0", str(getBalance()))
+    amountInput.insert("0", str(globalBalance))
     amountInput.bind("<FocusIn>", clear_ccamount_placeholder)
 
     Button(
         calculatorWindow,
-        text="CALCULATE",
+        text=lang_file["calculate"],
         font=textFont2,
         foreground=foregroundColor,
         activebackground=backgroundColor,
@@ -691,7 +849,7 @@ def openCalculator(handler):
     ).grid(row=3, columnspan=2, column=2, sticky=N + S + W + E, pady=(5, 0), padx=5)
 
     conversionresulttext = StringVar(calculatorWindow)
-    conversionresulttext.set("RESULT: 0.0")
+    conversionresulttext.set(f'{lang_file["result"]}: 0.0')
     conversionresultLabel = Label(
         calculatorWindow,
         textvariable=conversionresulttext,
@@ -714,7 +872,7 @@ def openStats(handler):
 
     statsWindow = Toplevel()
     statsWindow.resizable(False, False)
-    statsWindow.title("Duino-Coin Wallet - Statistics")
+    statsWindow.title(lang_file["statistics_title"])
     statsWindow.transient([root])
     statsWindow.configure(background=backgroundColor)
 
@@ -738,8 +896,13 @@ def openStats(handler):
     totalHashrate = 0
     for threadid in statsApi["Miners"]:
         if username in statsApi["Miners"][threadid]["User"]:
+            rigId = statsApi["Miners"][threadid]["Identifier"]
+            if rigId == "None":
+                rigId = ""
+            else:
+                rigId += ": "
             software = statsApi["Miners"][threadid]["Software"]
-            hashrate = str(round(statsApi["Miners"][threadid]["Hashrate"] / 1000, 2))
+            hashrate = str(round(statsApi["Miners"][threadid]["Hashrate"], 2))
             totalHashrate += float(hashrate)
             difficulty = str(statsApi["Miners"][threadid]["Diff"])
             shares = (
@@ -755,27 +918,37 @@ def openStats(handler):
                 "#"
                 + str(i + 1)
                 + ": "
+                + rigId
                 + software
                 + " "
-                + hashrate
+                + str(round(float(hashrate) / 1000, 2))
                 + " kH/s @ diff "
                 + difficulty
                 + ", "
                 + shares
-                + " acc. shares",
+                + " acc.",
             )
             i += 1
     if i == 0:
         Active_workers_listbox.insert(
-            i, "Couldn't detect any miners mining on your account"
+            i, lang_file["statistics_miner_warning"]
         )
+
+    totalHashrateString = str(int(totalHashrate)) + " H/s"
+    if totalHashrate > 1000000000:
+        totalHashrateString = str(round(totalHashrate / 1000000000, 2)) + " GH/s"
+    elif totalHashrate > 1000000:
+        totalHashrateString = str(round(totalHashrate / 1000000, 2)) + " MH/s"
+    elif totalHashrate > 1000:
+        totalHashrateString = str(round(totalHashrate / 1000, 2)) + " kH/s"
+
     Active_workers_listbox.configure(height=i)
     Active_workers_listbox.select_set(32)
     Active_workers_listbox.event_generate("<<ListboxSelect>>")
 
     Label(
         statsWindow,
-        text="YOUR MINERS - " + str(totalHashrate) + " kH/s",
+        text=f'{lang_file["your_miners"]} - ' + totalHashrateString,
         font=textFont3,
         foreground=foregroundColor,
         background=backgroundColor,
@@ -783,7 +956,7 @@ def openStats(handler):
 
     Label(
         statsWindow,
-        text="RICHLIST",
+        text=lang_file["richlist"],
         font=textFont3,
         foreground=foregroundColor,
         background=backgroundColor,
@@ -810,56 +983,56 @@ def openStats(handler):
 
     Label(
         statsWindow,
-        text="NETWORK INFO",
+        text=lang_file["network_info"],
         font=textFont3,
         foreground=foregroundColor,
         background=backgroundColor,
     ).grid(row=2, column=1, sticky=S + W, padx=5, pady=5)
     Label(
         statsWindow,
-        text="Difficulty: " + str(statsApi["Current difficulty"]),
+        text=f'{lang_file["difficulty"]}: ' + str(statsApi["Current difficulty"]),
         font=textFont,
         background=backgroundColor,
         foreground=fontColor,
     ).grid(row=3, column=1, sticky=S + W, padx=5)
     Label(
         statsWindow,
-        text="Mined blocks: " + str(statsApi["Mined blocks"]),
+        text=f'{lang_file["mined_blocks"]}: ' + str(statsApi["Mined blocks"]),
         font=textFont,
         background=backgroundColor,
         foreground=fontColor,
     ).grid(row=4, column=1, sticky=S + W, padx=5)
     Label(
         statsWindow,
-        text="Network hashrate: " + str(statsApi["Pool hashrate"]),
+        text=f'{lang_file["network_hashrate"]}: ' + str(statsApi["Pool hashrate"]),
         font=textFont,
         background=backgroundColor,
         foreground=fontColor,
     ).grid(row=5, column=1, sticky=S + W, padx=5)
     Label(
         statsWindow,
-        text="Active miners: " + str(len(statsApi["Miners"])),
+        text=f'{lang_file["active_miners"]}: ' + str(len(statsApi["Miners"])),
         font=textFont,
         background=backgroundColor,
         foreground=fontColor,
     ).grid(row=6, column=1, sticky=S + W, padx=5)
     Label(
         statsWindow,
-        text="1 DUCO est. price: $" + str(statsApi["Duco price"]),
+        text=f'1 DUCO {lang_file["estimated_price"]}: $' + str(statsApi["Duco price"]),
         font=textFont,
         background=backgroundColor,
         foreground=fontColor,
     ).grid(row=7, column=1, sticky=S + W, padx=5)
     Label(
         statsWindow,
-        text="Registered users: " + str(statsApi["Registered users"]),
+        text=f'{lang_file["registered_users"]}: ' + str(statsApi["Registered users"]),
         font=textFont,
         background=backgroundColor,
         foreground=fontColor,
     ).grid(row=8, column=1, sticky=S + W, padx=5)
     Label(
         statsWindow,
-        text="All-time mined DUCO: " + str(statsApi["All-time mined DUCO"]) + " ᕲ",
+        text=f'{lang_file["mined_duco"]}: ' + str(statsApi["All-time mined DUCO"]) + " ᕲ",
         font=textFont,
         background=backgroundColor,
         foreground=fontColor,
@@ -868,7 +1041,250 @@ def openStats(handler):
     statsWindow.mainloop()
 
 
+def openWrapper(handler):
+    def Wrap():
+        amount = amountWrap.get()
+        print("Got amount :", amount)
+        soc = socket.socket()
+        soc.connect((pool_address, int(pool_port)))
+        soc.recv(3)
+        try:
+            float(amount)
+        except:
+            pass
+        else:
+            soc.send(bytes(f"LOGI,{str(username)},{str(password)}", encoding="utf8"))
+            _ = soc.recv(10)
+            soc.send(
+                bytes(
+                    str("WRAP,") + str(amount) + str(",") + str(pub_key),
+                    encoding="utf8",
+                )
+            )
+            soc.close()
+            sleep(2)
+            wrapperWindow.quit()
+
+    try:
+        pubkeyfile = open(str(f"{resources}/DUCOPubKey.pub"), "r")
+    except:
+        messagebox.showerror(
+            title=lang_file["wrapper_error_title"],
+            message=lang_file["wrapper_error"],
+        )
+    else:
+        if tronpy_installed:
+            pub_key = pubkeyfile.read()
+            pubkeyfile.close()
+
+            wrapperWindow = Toplevel()
+            wrapperWindow.resizable(False, False)
+            wrapperWindow.title(lang_file["wrapper_title"])
+            wrapperWindow.transient([root])
+            wrapperWindow.configure()
+
+            askWrapAmount = Label(wrapperWindow, text="Amount to wrap :")
+            askWrapAmount.grid(row=0, column=0, sticky=N + W)
+            amountWrap = Entry(wrapperWindow, border="0", font=Font(size=15))
+            amountWrap.grid(row=1, column=0, sticky=N + W)
+            wrapButton = Button(wrapperWindow, text="Wrap", command=Wrap)
+            wrapButton.grid(row=2, column=0, sticky=N + W)
+        else:
+            messagebox.showerror(
+                title=lang_file["wrapper_error_title"],
+                message=lang_file["wrapper_error_tronpy"],
+            )
+
+
+def openUnWrapper(handler):
+    def UnWrap():
+        pubkeyfile = open(str(f"{resources}/DUCOPubKey.pub"), "r")
+        pub_key = pubkeyfile.read()
+        pubkeyfile.close()
+
+        passphrase = passphraseEntry.get()
+        privkeyfile = open(str(f"{resources}/DUCOPrivKey.encrypt"), "r")
+        privKeyEnc = privkeyfile.read()
+        privkeyfile.close()
+
+        try:
+            priv_key = str(password_decrypt(privKeyEnc, passphrase))[2:66]
+            wrong_passphrase = False
+            use_wrapper = True
+        except InvalidToken:
+            print(lang_file["invalid_passphrase"])
+            use_wrapper = False
+            wrong_passphrase = True
+
+        amount = amountUnWrap.get()
+        print("Got amount :", amount)
+        soc = socket.socket()
+        soc.connect((pool_address, int(pool_port)))
+        soc.recv(3)
+        try:
+            float(amount)
+        except:
+            pass
+        else:
+            soc.send(bytes(f"LOGI,{str(username)},{str(password)}", encoding="utf8"))
+            _ = soc.recv(10)
+            if use_wrapper:
+                pendingvalues = wduco.functions.pendingWithdrawals(pub_key, username)
+                txn_success = False  # transaction wasn't initiated, but variable should be declared
+                try:
+                    amount = float(amount)
+                except ValueError:
+                    print("NO, Value should be numeric... aborting")
+                else:
+                    if int(float(amount) * 10 ** 6) >= pendingvalues:
+                        toInit = int(float(amount) * 10 ** 6) - pendingvalues
+                    else:
+                        toInit = amount * 10 ** 6
+                    if toInit > 0:
+                        txn = (
+                            wduco.functions.initiateWithdraw(username, toInit)
+                            .with_owner(pub_key)
+                            .fee_limit(5_000_000)
+                            .build()
+                            .sign(PrivateKey(bytes.fromhex(priv_key)))
+                        )
+                        txn = txn.broadcast()
+                        txnfeedback = txn.result()
+                        if txnfeedback:
+                            txn_success = True
+                        else:
+                            txn_success = False
+                    if txn_success or amount <= pendingvalues:
+                        soc.send(
+                            bytes(
+                                str("UNWRAP,") + str(amount) + str(",") + str(pub_key),
+                                encoding="utf8",
+                            )
+                        )
+
+                soc.close()
+                sleep(2)
+                unWrapperWindow.quit()
+
+    try:
+        pubkeyfile = open(str(f"{resources}/DUCOPubKey.pub"), "r")
+        pub_key = pubkeyfile.read()
+        pubkeyfile.close()
+    except:
+        messagebox.showerror(
+            title=lang_file["wrapper_error_title"],
+            message=lang_file["wrapper_error"],
+        )
+    else:
+        if tronpy_installed:
+            unWrapperWindow = Toplevel()
+            unWrapperWindow.resizable(False, False)
+            unWrapperWindow.title(lang_file["unwrapper_title"])
+            unWrapperWindow.transient([root])
+            unWrapperWindow.configure()
+            askAmount = Label(unWrapperWindow, text=lang_file["unwrap_amount"])
+            askAmount.grid(row=1, column=0, sticky=N + W)
+
+            amountUnWrap = Entry(unWrapperWindow, border="0", font=Font(size=15))
+            amountUnWrap.grid(row=2, column=0, sticky=N + W)
+
+            askPassphrase = Label(
+                unWrapperWindow, text=lang_file["ask_passphrase"]
+            )
+            askPassphrase.grid(row=4, column=0, sticky=N + W)
+
+            passphraseEntry = Entry(unWrapperWindow, border="0", font=Font(size=15))
+            passphraseEntry.grid(row=5, column=0, sticky=N + W)
+
+            wrapButton = Button(unWrapperWindow, text="Unwrap", command=UnWrap)
+            wrapButton.grid(row=7, column=0, sticky=N + W)
+        else:
+            messagebox.showerror(
+                title=lang_file["wrapper_error"],
+                message=lang_file["wrapper_error_tronpy"],
+            )
+
+
 def openSettings(handler):
+    def _wrapperconf():
+        if tronpy_installed:
+            privkey_input = StringVar()
+            passphrase_input = StringVar()
+            wrapconfWindow = Toplevel()
+            wrapconfWindow.resizable(False, False)
+            wrapconfWindow.title(lang_file["wrapper_title"])
+            wrapconfWindow.transient([root])
+            wrapconfWindow.configure()
+
+            def setwrapper():
+                if privkey_input and passphrase_input:
+                    priv_key = privkey_entry.get()
+                    print("Got priv key :", priv_key)
+                    passphrase = passphrase_entry.get()
+                    print("Got passphrase :", passphrase)
+                    try:
+                        pub_key = PrivateKey(
+                            bytes.fromhex(priv_key)
+                        ).public_key.to_base58check_address()
+                    except:
+                        pass
+                    else:
+                        with sqlite3.connect(f"{resources}/wallet.db") as con:
+                            print("Saving data")
+
+                            privkeyfile = open(
+                                str(f"{resources}/DUCOPrivKey.encrypt"), "w"
+                            )
+                            privkeyfile.write(
+                                str(
+                                    password_encrypt(
+                                        priv_key.encode(), passphrase
+                                    ).decode()
+                                )
+                            )
+                            privkeyfile.close()
+
+                            pubkeyfile = open(str(f"{resources}/DUCOPubKey.pub"), "w")
+                            pubkeyfile.write(pub_key)
+                            pubkeyfile.close()
+
+                        Label(wrapconfWindow, text="Success !").pack()
+                        wrapconfWindow.quit()
+
+            title = Label(
+                wrapconfWindow, text=lang_file["wrapper_config_title"], font=Font(size=20)
+            )
+            title.grid(row=0, column=0, sticky=N + W, padx=5)
+
+            askprivkey = Label(wrapconfWindow, text=lang_file["ask_private_key"])
+            askprivkey.grid(row=1, column=0, sticky=N + W)
+
+            privkey_entry = Entry(
+                wrapconfWindow, font=textFont, textvariable=privkey_input
+            )
+            privkey_entry.grid(row=2, column=0, sticky=N + W)
+
+            askpassphrase = Label(wrapconfWindow, text=lang_file["passphrase"])
+            askpassphrase.grid(row=3, column=0, sticky=N + W)
+
+            passphrase_entry = Entry(
+                wrapconfWindow, font=textFont, textvariable=passphrase_input
+            )
+            passphrase_entry.grid(row=4, column=0, sticky=N + W)
+
+            wrapConfigButton = Button(
+                wrapconfWindow, text=lang_file["configure_wrapper_lowercase"], command=setwrapper
+            )
+            wrapConfigButton.grid(row=5, column=0, sticky=N + W)
+
+            wrapconfWindow.mainloop()
+
+        else:
+            messagebox.showerror(
+                title=lang_file["wrapper_error"],
+                message=lang_file["wrapper_error_tronpy"],
+            )
+
     def _logout():
         try:
             with sqlite3.connect(f"{resources}/wallet.db") as con:
@@ -917,11 +1333,11 @@ def openSettings(handler):
 
                         if not "OK" in response[0]:
                             messagebox.showerror(
-                                title="Error changing password", message=response[1]
+                                title=lang_file["change_passwd_error"], message=response[1]
                             )
                         else:
                             messagebox.showinfo(
-                                title="Password changed", message=response[1]
+                                title=lang_file["change_passwd_ok"], message=response[1]
                             )
                             try:
                                 try:
@@ -938,23 +1354,23 @@ def openSettings(handler):
                             execl(sys.executable, sys.executable, *sys.argv)
                     else:
                         messagebox.showerror(
-                            title="Error changing password",
-                            message="New passwords don't match",
+                            title=lang_file["change_passwd_error"],
+                            message=lang_file["error_passwd_dont_match"],
                         )
                 else:
                     messagebox.showerror(
-                        title="Error changing password",
-                        message="Fill in the blanks first",
+                        title=lang_file["change_passwd_error"],
+                        message=lang_file["fill_the_blanks_warning"],
                     )
             else:
                 messagebox.showerror(
-                    title="Error changing password",
-                    message="New password is the same as the old one",
+                    title=lang_file["change_passwd_error"],
+                    message=lang_file["same_passwd_error"],
                 )
 
         settingsWindow.destroy()
         changepassWindow = Toplevel()
-        changepassWindow.title("Change password")
+        changepassWindow.title(lang_file["change_passwd_lowercase"])
         changepassWindow.resizable(False, False)
         changepassWindow.transient([root])
         changepassWindow.configure(background=backgroundColor)
@@ -964,7 +1380,7 @@ def openSettings(handler):
 
         Label(
             changepassWindow,
-            text="OLD PASSWORD",
+            text=lang_file["old_passwd"],
             font=textFont2,
             background=backgroundColor,
             foreground=fontColor,
@@ -980,7 +1396,7 @@ def openSettings(handler):
 
         Label(
             changepassWindow,
-            text="NEW PASSWORD",
+            text=lang_file["new_passwd"],
             font=textFont2,
             background=backgroundColor,
             foreground=fontColor,
@@ -996,7 +1412,7 @@ def openSettings(handler):
 
         Label(
             changepassWindow,
-            text="CONFIRM NEW PASSWORD",
+            text=lang_file["confirm_new_passwd"],
             font=textFont2,
             background=backgroundColor,
             foreground=fontColor,
@@ -1012,7 +1428,7 @@ def openSettings(handler):
 
         chgpbtn = Button(
             changepassWindow,
-            text="CHANGE PASSWORD",
+            text=lang_file["change_passwd"],
             command=_changepassprotocol,
             foreground=foregroundColor,
             font=textFont2,
@@ -1023,7 +1439,7 @@ def openSettings(handler):
 
     settingsWindow = Toplevel()
     settingsWindow.resizable(False, False)
-    settingsWindow.title("Duino-Coin Wallet - Settings")
+    settingsWindow.title(lang_file["settings_title"])
     settingsWindow.transient([root])
     settingsWindow.configure(background=backgroundColor)
     textFont = Font(settingsWindow, size=12, weight="normal")
@@ -1031,7 +1447,7 @@ def openSettings(handler):
 
     Label(
         settingsWindow,
-        text="SETTINGS",
+        text=lang_file["uppercase_settings"],
         font=textFont3,
         foreground=foregroundColor,
         background=backgroundColor,
@@ -1039,7 +1455,7 @@ def openSettings(handler):
 
     logoutbtn = Button(
         settingsWindow,
-        text="LOGOUT",
+        text=lang_file["logout"],
         command=_logout,
         font=textFont,
         background=backgroundColor,
@@ -1050,7 +1466,7 @@ def openSettings(handler):
 
     chgpassbtn = Button(
         settingsWindow,
-        text="CHANGE PASSWORD",
+        text=lang_file["change_passwd"],
         command=_chgpass,
         font=textFont,
         background=backgroundColor,
@@ -1059,47 +1475,58 @@ def openSettings(handler):
     )
     chgpassbtn.grid(row=2, column=0, columnspan=4, sticky="nswe", padx=5)
 
+    wrapperconfbtn = Button(
+        settingsWindow,
+        text=lang_file["configure_wrapper"],
+        command=_wrapperconf,
+        font=textFont,
+        background=backgroundColor,
+        activebackground=backgroundColor,
+        foreground=fontColor,
+    )
+    wrapperconfbtn.grid(row=3, column=0, columnspan=4, sticky="nswe", padx=5)
+
     cleartransbtn = Button(
         settingsWindow,
-        text="CLEAR TRANSACTIONS",
+        text=lang_file["clear_transactions"],
         command=_cleartrs,
         font=textFont,
         background=backgroundColor,
         activebackground=backgroundColor,
         foreground=fontColor,
     )
-    cleartransbtn.grid(row=3, column=0, columnspan=4, sticky="nswe", padx=5)
+    cleartransbtn.grid(row=4, column=0, columnspan=4, sticky="nswe", padx=5)
 
     separator = ttk.Separator(settingsWindow, orient="horizontal")
     separator.grid(
-        row=4, column=0, columnspan=4, sticky=N + S + E + W, padx=(5, 5), pady=5
+        row=5, column=0, columnspan=4, sticky=N + S + E + W, padx=(5, 5), pady=5
     )
 
     Label(
         settingsWindow,
-        text="Logged-in as user: " + str(username),
-        font=textFont,
-        background=backgroundColor,
-        foreground=fontColor,
-    ).grid(row=5, column=0, columnspan=4, padx=5, sticky=S + W)
-    Label(
-        settingsWindow,
-        text="Wallet version: " + str(version),
+        text=f'{lang_file["logged_in_as"]}: ' + str(username),
         font=textFont,
         background=backgroundColor,
         foreground=fontColor,
     ).grid(row=6, column=0, columnspan=4, padx=5, sticky=S + W)
     Label(
         settingsWindow,
-        text="More options will come in the future",
+        text=f'{lang_file["wallet_version"]}: ' + str(version),
         font=textFont,
         background=backgroundColor,
         foreground=fontColor,
     ).grid(row=7, column=0, columnspan=4, padx=5, sticky=S + W)
+    Label(
+        settingsWindow,
+        text=lang_file["config_dev_warning"],
+        font=textFont,
+        background=backgroundColor,
+        foreground=fontColor,
+    ).grid(row=8, column=0, columnspan=4, padx=5, sticky=S + W)
 
     separator = ttk.Separator(settingsWindow, orient="horizontal")
     separator.grid(
-        row=8, column=0, columnspan=4, sticky=N + S + E + W, padx=(5, 5), pady=5
+        row=9, column=0, columnspan=4, sticky=N + S + E + W, padx=(5, 5), pady=5
     )
 
     original = Image.open(resources + "duco.png")
@@ -1109,7 +1536,7 @@ def openSettings(handler):
     websiteLabel = Label(
         settingsWindow, image=website, background=backgroundColor, foreground=fontColor
     )
-    websiteLabel.grid(row=9, column=0, sticky=N + S + E + W, padx=(5, 0), pady=(0, 5))
+    websiteLabel.grid(row=10, column=0, sticky=N + S + E + W, padx=(5, 0), pady=(0, 5))
     websiteLabel.bind("<Button-1>", openWebsite)
 
     original = Image.open(resources + "github.png")
@@ -1119,7 +1546,7 @@ def openSettings(handler):
     githubLabel = Label(
         settingsWindow, image=github, background=backgroundColor, foreground=fontColor
     )
-    githubLabel.grid(row=9, column=1, sticky=N + S + E + W, pady=(0, 5))
+    githubLabel.grid(row=10, column=1, sticky=N + S + E + W, pady=(0, 5))
     githubLabel.bind("<Button-1>", openGitHub)
 
     original = Image.open(resources + "exchange.png")
@@ -1129,7 +1556,7 @@ def openSettings(handler):
     exchangeLabel = Label(
         settingsWindow, image=exchange, background=backgroundColor, foreground=fontColor
     )
-    exchangeLabel.grid(row=9, column=2, sticky=N + S + E + W, pady=(0, 5))
+    exchangeLabel.grid(row=10, column=2, sticky=N + S + E + W, pady=(0, 5))
     exchangeLabel.bind("<Button-1>", openExchange)
 
     original = Image.open(resources + "discord.png")
@@ -1139,7 +1566,7 @@ def openSettings(handler):
     discordLabel = Label(
         settingsWindow, image=discord, background=backgroundColor, foreground=fontColor
     )
-    discordLabel.grid(row=9, column=3, sticky=N + S + E + W, padx=(0, 5), pady=(0, 5))
+    discordLabel.grid(row=10, column=3, sticky=N + S + E + W, padx=(0, 5), pady=(0, 5))
     discordLabel.bind("<Button-1>", openDiscord)
 
 
@@ -1149,8 +1576,7 @@ unpaid_balance = 0
 
 
 def getBalance():
-    global oldbalance, balance, unpaid_balance
-
+    global oldbalance, balance, unpaid_balance, globalBalance
     while True:
         try:
             soc = socket.socket()
@@ -1158,42 +1584,83 @@ def getBalance():
             soc.recv(3)
             soc.send(bytes(f"LOGI,{str(username)},{str(password)}", encoding="utf8"))
             _ = soc.recv(2)
-            soc.send(bytes("BALA", encoding="utf8"))
-            oldbalance = balance
-            balance = soc.recv(1024).decode()
-            soc.close()
-            try:
-                balance = float(balance)
-                break
-            except ValueError:
-                pass
-        except Exception as e:
-            print(e)
+            while True:
+                while True:
+                    try:
+                        soc.send(bytes("BALA", encoding="utf8"))
+                        oldbalance = balance
+                        balance = soc.recv(1024).decode()
+                        try:
+                            balance = float(balance)
+                            break
+                        except ValueError:
+                            pass
+                    except Exception as e:
+                        print("Retrying in 5s.")
+                        sleep(5)
+
+                try:
+                    if oldbalance != balance:
+                        difference = float(balance) - float(oldbalance)
+                        dif_with_unpaid = (
+                            float(balance) - float(oldbalance)
+                        ) + unpaid_balance
+                        if float(balance) != float(difference):
+                            if (
+                                dif_with_unpaid >= min_trans_difference
+                                or dif_with_unpaid < 0
+                            ):
+                                now = datetime.datetime.now()
+                                difference = round(dif_with_unpaid, 8)
+                                if (
+                                    difference >= min_trans_difference_notify
+                                    or difference < 0
+                                    and notificationsEnabled
+                                ):
+                                    notification = Notify()
+                                    notification.title = "Duino-Coin Wallet"
+                                    notification.message = (
+                                        "New transaction\n"
+                                        + now.strftime("%d.%m.%Y %H:%M:%S\n")
+                                        + str(round(difference, 6))
+                                        + " DUCO"
+                                    )
+                                    notification.icon = f"{resources}/duco.png"
+                                    notification.send(block=False)
+                                with sqlite3.connect(f"{resources}/wallet.db") as con:
+                                    cur = con.cursor()
+                                    cur.execute(
+                                        """INSERT INTO Transactions(Transaction_Date, amount) VALUES(?, ?)""",
+                                        (
+                                            now.strftime("%d.%m.%Y %H:%M:%S"),
+                                            round(difference, 8),
+                                        ),
+                                    )
+                                    con.commit()
+                                    unpaid_balance = 0
+                            else:
+                                unpaid_balance += float(balance) - float(oldbalance)
+                except Exception as e:
+                    print(e)
+
+                globalBalance = round(float(balance), 8)
+                sleep(3)
+        except:
             print("Retrying in 5s.")
             sleep(5)
 
-    try:
-        if oldbalance != balance:
-            difference = float(balance) - float(oldbalance)
-            dif_with_unpaid = (float(balance) - float(oldbalance)) + unpaid_balance
-            if float(balance) != float(difference):
-                if dif_with_unpaid >= min_trans_difference or dif_with_unpaid < 0:
-                    now = datetime.datetime.now()
-                    difference = round(dif_with_unpaid, 8)
-                    with sqlite3.connect(f"{resources}/wallet.db") as con:
-                        cur = con.cursor()
-                        cur.execute(
-                            """INSERT INTO Transactions(Transaction_Date, amount) VALUES(?, ?)""",
-                            (now.strftime("%d.%m.%Y %H:%M:%S"), round(difference, 8)),
-                        )
-                        con.commit()
-                        unpaid_balance = 0
-                else:
-                    unpaid_balance += float(balance) - float(oldbalance)
-    except Exception as e:
-        print(e)
 
-    return round(float(balance), 8)
+def getwbalance():
+    if tronpy_installed:
+        try:
+            pubkeyfile = open(str(f"{resources}/DUCOPubKey.pub"), "r")
+            pub_key = pubkeyfile.read()
+            pubkeyfile.close()
+        except:
+            return 0
+        else:
+            wBalance = float(wduco.functions.balanceOf(pub_key)) / (10 ** 6)
+            return wBalance
 
 
 profitCheck = 0
@@ -1202,8 +1669,9 @@ profitCheck = 0
 def updateBalanceLabel():
     global profit_array, profitCheck
     try:
-        balancetext.set(str(round(getBalance(), 7)) + " ᕲ")
-        balanceusdtext.set("$" + str(round(getBalance() * ducofiat, 4)))
+        balancetext.set(str(round(globalBalance, 7)) + " ᕲ")
+        wbalancetext.set(str(getwbalance()) + " wᕲ")
+        balanceusdtext.set("$" + str(round(globalBalance * ducofiat, 4)))
 
         with sqlite3.connect(f"{resources}/wallet.db") as con:
             cur = con.cursor()
@@ -1235,8 +1703,7 @@ def updateBalanceLabel():
                 hourlyprofittext.set("")
                 dailyprofittext.set("")
             profitCheck += 1
-    except Exception as e:
-        print(e)
+    except:
         _exit(0)
     Timer(1, updateBalanceLabel).start()
 
@@ -1246,7 +1713,7 @@ def calculateProfit(start_bal):
         global curr_bal, profit_array
 
         prev_bal = curr_bal
-        curr_bal = getBalance()
+        curr_bal = globalBalance
         session = curr_bal - start_bal
         tensec = curr_bal - prev_bal
         minute = tensec * 6
@@ -1270,8 +1737,8 @@ def sendFunds(handler):
     amountStr = amount.get()
 
     MsgBox = messagebox.askquestion(
-        "Warning",
-        f"Are you sure you want to send {amountStr} DUCO to {recipientStr}",
+        lang_file["warning"],
+        f'{lang_file["send_funds_warning"]} {amountStr} DUCO to {recipientStr}',
         icon="warning",
     )
     if MsgBox == "yes":
@@ -1305,7 +1772,7 @@ def initRichPresence():
 
 def updateRichPresence():
     try:
-        balance = round(getBalance(), 4)
+        balance = round(globalBalance, 4)
         RPC.update(
             details=str(balance) + " ᕲ ($" + str(round(ducofiat * balance, 2)) + ")",
             large_image="duco",
@@ -1321,37 +1788,43 @@ def updateRichPresence():
     Timer(15, updateRichPresence).start()
 
 
-initRichPresence()
-updateRichPresence()
-
-
 class Wallet:
     def __init__(self, master):
-        global recipient, amount, balancetext
+        global recipient, amount, balancetext, wbalancetext
         global sessionprofittext, minuteprofittext, hourlyprofittext, dailyprofittext
         global balanceusdtext, ducopricetext
         global transactionstext
         global curr_bal, profit_array
+        try:
+            loading.destroy()
+        except:
+            pass
 
+        textFont4 = Font(size=14, weight="bold")
         textFont3 = Font(size=12, weight="bold")
-        textFont2 = Font(size=22, weight="bold")
+        textFont2 = Font(size=18, weight="bold")
         textFont = Font(size=12, weight="normal")
 
         self.master = master
         master.resizable(False, False)
         master.configure(background=backgroundColor)
-        master.title("Duino-Coin Wallet")
+        master.title(lang_file["duino_coin_wallet"])
 
         Label(
             master,
-            text="DUINO-COIN WALLET: " + str(username),
+            text=f'{lang_file["uppercase_duino_coin_wallet"]}: ' + str(username),
             font=textFont3,
             foreground=foregroundColor,
             background=backgroundColor,
         ).grid(row=0, column=0, sticky=S + W, columnspan=4, pady=(5, 0), padx=(5, 0))
 
         balancetext = StringVar()
-        balancetext.set("Please wait...")
+        wbalancetext = StringVar()
+        balancetext.set(lang_file["please_wait"])
+        if tronpy_installed:
+            wbalancetext.set(lang_file["please_wait"])
+        else:
+            wbalancetext.set("0.00")
         balanceLabel = Label(
             master,
             textvariable=balancetext,
@@ -1361,8 +1834,18 @@ class Wallet:
         )
         balanceLabel.grid(row=1, column=0, columnspan=3, sticky=S + W, padx=(5, 0))
 
+        wbalanceLabel = Label(
+            master,
+            textvariable=wbalancetext,
+            font=textFont4,
+            foreground=foregroundColorSecondary,
+            background=backgroundColor,
+        )
+        wbalanceLabel.grid(row=2, column=0, columnspan=3, sticky=S + W, padx=(5, 0))
+
         balanceusdtext = StringVar()
-        balanceusdtext.set("Please wait...")
+        balanceusdtext.set(lang_file["please_wait"])
+
         Label(
             master,
             textvariable=balanceusdtext,
@@ -1389,7 +1872,7 @@ class Wallet:
 
         Label(
             master,
-            text="RECIPIENT",
+            text=lang_file["recipient"],
             font=textFont,
             background=backgroundColor,
             foreground=fontColor,
@@ -1408,7 +1891,7 @@ class Wallet:
 
         Label(
             master,
-            text="AMOUNT",
+            text=lang_file["amount"],
             font=textFont,
             background=backgroundColor,
             foreground=fontColor,
@@ -1422,35 +1905,76 @@ class Wallet:
             background=backgroundColor,
         )
         amount.grid(row=6, column=1, sticky=N + W + S + E, columnspan=3, padx=(0, 5))
-        amount.insert("0", "2.0")
+        amount.insert("0", "2.2")
         amount.bind("<FocusIn>", clear_amount_placeholder)
 
         sendLabel = Button(
             master,
-            text="SEND FUNDS",
+            text=lang_file["send_funds"],
             font=textFont3,
             foreground=foregroundColor,
             background=backgroundColor,
             activebackground=backgroundColor,
         )
         sendLabel.grid(
-            row=7, column=0, sticky=N + S + E + W, columnspan=4, padx=5, pady=(1, 5)
+            row=7,
+            column=0,
+            sticky=N + S + E + W,
+            columnspan=4,
+            padx=(5),
+            pady=(1, 2),
         )
         sendLabel.bind("<Button-1>", sendFunds)
+
+        wrapLabel = Button(
+            master,
+            text=lang_file["wrap_duco"],
+            font=textFont3,
+            foreground=foregroundColor,
+            background=backgroundColor,
+            activebackground=backgroundColor,
+        )
+        wrapLabel.grid(
+            row=8,
+            column=0,
+            sticky=N + S + E + W,
+            columnspan=2,
+            padx=(5, 1),
+            pady=(1, 5),
+        )
+        wrapLabel.bind("<Button-1>", openWrapper)
+
+        wrapLabel = Button(
+            master,
+            text=lang_file["unwrap_duco"],
+            font=textFont3,
+            foreground=foregroundColor,
+            background=backgroundColor,
+            activebackground=backgroundColor,
+        )
+        wrapLabel.grid(
+            row=8,
+            column=2,
+            sticky=N + S + E + W,
+            columnspan=2,
+            padx=(1, 5),
+            pady=(1, 5),
+        )
+        wrapLabel.bind("<Button-1>", openUnWrapper)
 
         separator = ttk.Separator(master, orient="horizontal")
         separator.grid(row=9, column=0, sticky=N + S + E + W, columnspan=4, padx=(5, 5))
 
         Label(
             master,
-            text="ESTIMATED PROFIT",
+            text=lang_file["estimated_profit"],
             font=textFont3,
             foreground=foregroundColor,
             background=backgroundColor,
         ).grid(row=10, column=0, sticky=S + W, columnspan=4, pady=(5, 0), padx=(5, 0))
 
         sessionprofittext = StringVar()
-        sessionprofittext.set("Please wait - calculating...")
+        sessionprofittext.set(lang_file["please_wait_calculating"])
         sessionProfitLabel = Label(
             master,
             textvariable=sessionprofittext,
@@ -1496,7 +2020,7 @@ class Wallet:
 
         Label(
             master,
-            text="LOCAL TRANSACTIONS",
+            text=lang_file["local_transactions"],
             font=textFont3,
             foreground=foregroundColor,
             background=backgroundColor,
@@ -1568,35 +2092,48 @@ class Wallet:
         settingsLabel.bind("<Button>", openSettings)
 
         root.iconphoto(True, PhotoImage(file=resources + "duco.png"))
-        start_balance = getBalance()
+        start_balance = globalBalance
         curr_bal = start_balance
         calculateProfit(start_balance)
         updateBalanceLabel()
 
-        def quit_window(icon, item):
-            master.destroy()
+        if not disableTray:
 
-        def show_window(icon, item):
-            master.after(0,root.deiconify)
+            def quit_window(icon, item):
+                master.destroy()
 
+            def show_window(icon, item):
+                master.after(0, root.deiconify)
 
-        def withdraw_window():  
-            image = Image.open("Resources\\duco.png")
-            menu = (pystray.MenuItem('Show', show_window), pystray.MenuItem('Quit', quit_window))
-            icon = pystray.Icon("Duino-coin GUI Wallet", image, "Duino-coin GUI Wallet", menu)
-            icon.run()
+            def withdraw_window():
+                image = Image.open(resources + "duco.png")
+                menu = (
+                    pystray.MenuItem("Show", show_window),
+                    pystray.MenuItem("Quit", quit_window),
+                )
+                icon = pystray.Icon(
+                    "Duino-coin GUI Wallet", image, "Duino-coin GUI Wallet", menu
+                )
+                icon.run()
 
-        t = threading.Thread(target=withdraw_window)
-        t.setDaemon(True)
-        t.start()
+            t = threading.Thread(target=withdraw_window)
+            t.setDaemon(True)
+            t.start()
 
         root.mainloop()
 
 
 try:
+    GetDucoPrice()  # Start duco price updater
+    threading.Thread(target=getBalance).start()
+    initRichPresence()
+    updateRichPresence()
+    try:
+        loading.destroy()  # Destroy loading dialog and start the main wallet window
+    except:
+        pass
     root = Tk()
     my_gui = Wallet(root)
 except ValueError:
-    _exit(0)
-except NameError:
+    print("ValueError")
     _exit(0)

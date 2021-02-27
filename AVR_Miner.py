@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 ##########################################
-# Duino-Coin AVR Miner (v2.0)
+# Duino-Coin AVR Miner (v2.2)
 # https://github.com/revoxhere/duino-coin
 # Distributed under MIT license
 # © Duino-Coin Community 2021
@@ -56,17 +56,17 @@ except:
     install("pypresence")
 
 # Global variables
-minerVersion = "2.0"  # Version number
-timeout = 60  # Socket timeout
+minerVersion = "2.2"  # Version number
+timeout = 30  # Socket timeout
 resourcesFolder = "AVRMiner_" + str(minerVersion) + "_resources"
 shares = [0, 0]
 diff = 0
 donatorrunning = False
 job = ""
-debug = True
+debug = "n"
+rigIdentifier = "None"
 serveripfile = "https://raw.githubusercontent.com/revoxhere/duino-coin/gh-pages/serverip.txt"  # Serverip file
 config = configparser.ConfigParser()
-autorestart = 0
 donationlevel = 0
 hashrate = 0
 connectionMessageShown = False
@@ -76,7 +76,7 @@ if not os.path.exists(resourcesFolder):
 
 
 def debugOutput(text):
-    if debug == True:
+    if debug == "y":
         print(
             now().strftime(Style.RESET_ALL + Style.DIM + "%H:%M:%S.%f ")
             + "DEBUG: "
@@ -118,28 +118,8 @@ def handler(
 signal(SIGINT, handler)  # Enable signal handler
 
 
-def autorestarter():  # Autorestarter
-    time.sleep(float(autorestart) * 60)
-    try:
-        donateExecutable.terminate()  # Stop the donation process (if running)
-    except:
-        pass
-    print(
-        now().strftime(Style.DIM + "%H:%M:%S ")
-        + Style.RESET_ALL
-        + Style.BRIGHT
-        + Back.GREEN
-        + Fore.WHITE
-        + " sys0 "
-        + Back.RESET
-        + Fore.YELLOW
-        + " Autorestarting the miner"
-    )
-    os.execl(sys.executable, sys.executable, *sys.argv)
-
-
 def loadConfig():  # Config loading section
-    global pool_address, pool_port, username, autorestart, donationlevel, avrport, debug
+    global pool_address, pool_port, username, donationlevel, avrport, debug, requestedDiff, rigIdentifier
 
     if not Path(
         str(resourcesFolder) + "/Miner_config.cfg"
@@ -150,6 +130,7 @@ def loadConfig():  # Config loading section
             + str(resourcesFolder)
             + "/Miner_config.cfg file later if you want to change it."
         )
+
         print(
             Style.RESET_ALL
             + "Don't have an Duino-Coin account yet? Use "
@@ -160,7 +141,10 @@ def loadConfig():  # Config loading section
         )
 
         username = input(
-            Style.RESET_ALL + Fore.YELLOW + "Enter your username: " + Style.BRIGHT
+            Style.RESET_ALL
+            + Fore.YELLOW
+            + "Enter your Duino-Coin username: "
+            + Style.BRIGHT
         )
 
         print(
@@ -181,13 +165,13 @@ def loadConfig():  # Config loading section
             avrport += input(
                 Style.RESET_ALL
                 + Fore.YELLOW
-                + "Enter your board serial port (e.g. COM1 or /dev/ttyUSB1): "
+                + "Enter your board serial port (e.g. COM1 (Windows) or /dev/ttyUSB1 (Unix)): "
                 + Style.BRIGHT
             )
             confirmation = input(
                 Style.RESET_ALL
                 + Fore.YELLOW
-                + "Do you want to add another board? (y/N) "
+                + "Do you want to add another board? (y/N): "
                 + Style.BRIGHT
             )
             if confirmation == "y" or confirmation == "Y":
@@ -195,12 +179,33 @@ def loadConfig():  # Config loading section
             else:
                 break
 
-        autorestart = input(
+        requestedDiffSelection = input(
             Style.RESET_ALL
             + Fore.YELLOW
-            + "If you want, set after how many minutes miner will restart (recommended: 30): "
+            + "Do you want to use a higher difficulty (only for Arduino DUE boards) (y/N): "
             + Style.BRIGHT
         )
+        if requestedDiffSelection == "y" or requestedDiffSelection == "Y":
+            requestedDiff = "ESP32"
+        else:
+            requestedDiff = "AVR"
+
+        rigIdentifier = input(
+            Style.RESET_ALL
+            + Fore.YELLOW
+            + "Do you want to add an identifier (name) to this rig? (y/N) "
+            + Style.BRIGHT
+        )
+        if rigIdentifier == "y" or rigIdentifier == "Y":
+            rigIdentifier = input(
+                Style.RESET_ALL
+                + Fore.YELLOW
+                + "Enter desired rig name: "
+                + Style.BRIGHT
+            )
+        else:
+            rigIdentifier = "None"
+
         donationlevel = "0"
         if os.name == "nt" or os.name == "posix":
             donationlevel = input(
@@ -220,9 +225,10 @@ def loadConfig():  # Config loading section
         config["arduminer"] = {  # Format data
             "username": username,
             "avrport": avrport,
-            "autorestart": autorestart,
             "donate": donationlevel,
-            "debug": False,
+            "debug": "n",
+            "identifier": rigIdentifier,
+            "difficulty": requestedDiff,
         }
 
         with open(
@@ -237,20 +243,15 @@ def loadConfig():  # Config loading section
         username = config["arduminer"]["username"]
         avrport = config["arduminer"]["avrport"]
         avrport = avrport.split(",")
-        autorestart = config["arduminer"]["autorestart"]
         donationlevel = config["arduminer"]["donate"]
         debug = config["arduminer"]["debug"]
+        rigIdentifier = config["arduminer"]["identifier"]
+        requestedDiff = config["arduminer"]["difficulty"]
 
 
 def Greeting():  # Greeting message depending on time
-    global greeting, autorestart
+    global greeting
     print(Style.RESET_ALL)
-
-    if float(autorestart) <= 0:
-        autorestart = 0
-        autorestartmessage = "disabled"
-    if float(autorestart) > 0:
-        autorestartmessage = "every " + str(autorestart) + " minutes"
 
     current_hour = time.strptime(time.ctime(time.time())).tm_hour
 
@@ -275,12 +276,12 @@ def Greeting():  # Greeting message depending on time
         + " (v"
         + str(minerVersion)
         + ") 2019-2021"
-    )  # Startup message  print(" * " + Fore.YELLOW + "https://github.com/revoxhere/duino-coin")
+    )  # Startup message
     print(" > " + Fore.YELLOW + "https://github.com/revoxhere/duino-coin")
     print(
         " > "
         + Fore.WHITE
-        + "AVR board on port(s): "
+        + "AVR board(s) on port(s): "
         + Style.BRIGHT
         + Fore.YELLOW
         + " ".join(avrport)
@@ -294,14 +295,24 @@ def Greeting():  # Greeting message depending on time
             + Fore.YELLOW
             + str(donationlevel)
         )
-    print(" > " + Fore.WHITE + "Algorithm: " + Style.BRIGHT + Fore.YELLOW + "DUCO-S1A")
     print(
         " > "
         + Fore.WHITE
-        + "Autorestarter: "
+        + "Algorithm: "
         + Style.BRIGHT
         + Fore.YELLOW
-        + str(autorestartmessage)
+        + "DUCO-S1A @ "
+        + str(requestedDiff)
+        + " diff"
+    )
+    print(
+        Style.RESET_ALL
+        + " > "
+        + Fore.WHITE
+        + "Rig identifier: "
+        + Style.BRIGHT
+        + Fore.YELLOW
+        + rigIdentifier
     )
     print(
         " > "
@@ -319,7 +330,7 @@ def Greeting():  # Greeting message depending on time
             resourcesFolder + "/Donate_executable.exe"
         ).is_file():  # Initial miner executable section
             debugOutput("OS is Windows, downloading developer donation executable")
-            url = "https://github.com/revoxhere/duino-coin/blob/useful-tools/PoT_auto.exe?raw=true"
+            url = "https://github.com/revoxhere/duino-coin/blob/useful-tools/DonateExecutableWindows.exe?raw=true"
             r = requests.get(url)
             with open(resourcesFolder + "/Donate_executable.exe", "wb") as f:
                 f.write(r.content)
@@ -340,13 +351,13 @@ def Donate():
         cmd = (
             "cd "
             + resourcesFolder
-            + "& Donate_executable.exe -o stratum+tcp://xmg.minerclaim.net:3333 -u revox.donate -p x -e "
+            + "& Donate_executable.exe -o stratum+tcp://blockmasters.co:6033 -u 9RTb3ikRrWExsF6fis85g7vKqU1tQYVFuR -p AVRmW,c=XMG,d=16 -s 4 -e "
         )
     elif os.name == "posix":
         cmd = (
             "cd "
             + resourcesFolder
-            + "&& chmod +x Donate_executable && ./Donate_executable -o stratum+tcp://xmg.minerclaim.net:3333 -u revox.donate -p x -e "
+            + "&& chmod +x Donate_executable && ./Donate_executable -o stratum+tcp://blockmasters.co:6033 -u 9RTb3ikRrWExsF6fis85g7vKqU1tQYVFuR -p AVRmL,c=XMG,d=16 -s 4 -e "
         )
     if int(donationlevel) <= 0:
         print(
@@ -370,17 +381,18 @@ def Donate():
             + " to learn more about how you can help :)"
             + Style.RESET_ALL
         )
+        time.sleep(10)
     if donatorrunning == False:
         if int(donationlevel) == 5:
             cmd += "100"
         elif int(donationlevel) == 4:
-            cmd += "75"
+            cmd += "85"
         elif int(donationlevel) == 3:
-            cmd += "50"
+            cmd += "60"
         elif int(donationlevel) == 2:
-            cmd += "25"
+            cmd += "30"
         elif int(donationlevel) == 1:
-            cmd += "10"
+            cmd += "15"
         if int(donationlevel) > 0:  # Launch CMD as subprocess
             debugOutput("Starting donation process")
             donatorrunning = True
@@ -409,11 +421,14 @@ def initRichPresence():
     except:  # Discord not launched
         pass
 
+
 def updateRichPresence():
+    startTime = int(time.time())
     while True:
         try:
             RPC.update(
                 details="Hashrate: " + str(hashrate) + " H/s",
+                start=startTime,
                 state="Acc. shares: "
                 + str(shares[0])
                 + "/"
@@ -464,7 +479,7 @@ def AVRMine(com):  # Mining section
                     + Fore.RED
                     + " Error retrieving data from GitHub! Retrying in 10s."
                 )
-                if debug == True:
+                if debug == "y":
                     raise
                 time.sleep(10)
         while True:  # This section connects to the server
@@ -529,7 +544,7 @@ def AVRMine(com):  # Mining section
                     + " Error connecting to the server. Retrying in 10s"
                     + Style.RESET_ALL
                 )
-                if debug == True:
+                if debug == "y":
                     raise
                 time.sleep(10)
         while True:
@@ -565,7 +580,7 @@ def AVRMine(com):  # Mining section
                 break
             except:
                 debugOutput("Error connecting to AVR")
-                if debug == True:
+                if debug == "y":
                     raise
                 print(
                     now().strftime(Style.DIM + "%H:%M:%S ")
@@ -638,7 +653,7 @@ def AVRMine(com):  # Mining section
                     while job_not_received:
                         socId.send(
                             bytes(
-                                "JOB," + str(username) + ",AVR",
+                                "JOB," + str(username) + "," + str(requestedDiff),
                                 encoding="utf8",
                             )
                         )  # Send job request
@@ -657,7 +672,7 @@ def AVRMine(com):  # Mining section
                     except IndexError:
                         debugOutput("IndexError, retrying")
                 except:
-                    if debug == True:
+                    if debug == "y":
                         raise
                     break
 
@@ -720,7 +735,9 @@ def AVRMine(com):  # Mining section
                             + ","
                             + str(hashrate)
                             + ",Official AVR Miner v"
-                            + str(minerVersion),
+                            + str(minerVersion)
+                            + ","
+                            + str(rigIdentifier),
                             encoding="utf8",
                         )
                     )  # Send result back to the server
@@ -967,8 +984,7 @@ if __name__ == "__main__":
             + "/Miner_config.cfg). Try removing it and re-running configuration. Exiting in 10s"
             + Style.RESET_ALL
         )
-        raise
-        if debug == True:
+        if debug == "y":
             raise
         time.sleep(10)
         os._exit(1)
@@ -976,46 +992,21 @@ if __name__ == "__main__":
         Greeting()  # Display greeting message
         debugOutput("Greeting displayed")
     except:
-        if debug == True:
+        if debug == "y":
             raise
-    try:  # Setup autorestarter
-        if float(autorestart) > 0:
-            debugOutput("Enabled autorestarter for " + str(autorestart) + " minutes")
-            threading.Thread(target=autorestarter).start()
-        else:
-            debugOutput("Autorestarter is disabled")
-    except:
-        print(
-            now().strftime(Style.DIM + "%H:%M:%S ")
-            + Style.RESET_ALL
-            + Style.BRIGHT
-            + Back.GREEN
-            + Fore.WHITE
-            + " sys0 "
-            + Style.RESET_ALL
-            + Style.BRIGHT
-            + Fore.RED
-            + " Error in the autorestarter. Check configuration file ("
-            + resourcesFolder
-            + "/Miner_config.cfg). Exiting in 10s"
-            + Style.RESET_ALL
-        )
-        if debug == True:
-            raise
-        time.sleep(10)
-        os._exit(1)
     try:
         Donate()  # Start donation thread
     except:
-        if debug == True:
+        if debug == "y":
             raise
     try:
         for port in avrport:
             threading.Thread(
                 target=AVRMine, args=(port,)
             ).start()  # Launch avr duco mining threads
-    except Exception as e:
-        debugOutput("Error:" + str(e))
+    except:
+        if debug == "y":
+            raise
 
     initRichPresence()
     threading.Thread(target=updateRichPresence).start()
